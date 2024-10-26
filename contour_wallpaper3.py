@@ -9,7 +9,8 @@ from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 import cv2
 import random
-
+import librosa
+import librosa.display
 
 class AudioAnalyzer:
     def __init__(self, audio_path):
@@ -263,14 +264,25 @@ class WallpaperGenerator(QMainWindow):
         self.current_wallpaper = None
         self.video_writer = None
 
+    # Replace the loadAudio method in the WallpaperGenerator class
     def loadAudio(self):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         file_dialog = QFileDialog()
-        file_path, _ = file_dialog.getOpenFileName(self, "Load Audio", "", "Audio Files (*.mp3);;All Files (*)", options=options)
+        file_path, _ = file_dialog.getOpenFileName(
+            self,
+            "Load Audio",
+            "",
+            "Audio Files (*.mp3 *.wav);;All Files (*)",
+            options=options
+        )
 
         if file_path:
-            self.audio_segment = AudioSegment.from_file(file_path, format="mp3")
+            try:
+                self.audio_analyzer = AudioAnalyzer(file_path)
+                print(f"Audio loaded successfully. Tempo: {self.audio_analyzer.tempo} BPM")
+            except Exception as e:
+                print(f"Error loading audio: {str(e)}")
 
     def loadImage(self):
         options = QFileDialog.Options()
@@ -394,45 +406,59 @@ class WallpaperGenerator(QMainWindow):
                 self.video_writer.write(frame_array)
 
     def saveAnimatedVideo(self):
-        if self.current_wallpaper is not None:
-            # Utwórz nowego VideoWritera tylko w momencie zapisu animacji
-            video_path, _ = QFileDialog.getSaveFileName(self, "Save Video As", "", "Video Files (*.mp4);;All Files (*)")
-            if video_path:
-                # Define the codec and create a VideoWriter object
-                codec = cv2.VideoWriter_fourcc(*'XVID')
-                fps = 24  # Frames per second
-                duration_seconds = 3
-                num_frames = int(fps * duration_seconds)
-                self.video_writer = cv2.VideoWriter(video_path, codec, fps, (self.current_wallpaper.width, self.current_wallpaper.height))
+        if self.current_wallpaper is None:
+            print("Please generate or load a wallpaper first")
+            return
 
-                # Create and show progress dialog
-                progress_dialog = QProgressDialog("Generating Video...", "Cancel", 0, 100, self)
-                progress_dialog.setWindowTitle("Video Generation")
-                progress_dialog.setWindowModality(Qt.WindowModal)
-                progress_dialog.show()
+        if not hasattr(self, 'audio_analyzer'):
+            print("Please load an audio file first")
+            return
 
-                # Connect the progress dialog to the thread's signal
-                video_thread = VideoGenerationThread(self.video_writer, self.current_wallpaper)
-                video_thread.update_progress.connect(progress_dialog.setValue)
-    
-                # Start the thread
-                video_thread.start()    
+        video_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Video As",
+            "",
+            "Video Files (*.mp4);;All Files (*)"
+        )
 
-                # Connect the progress dialog's "canceled" signal to stop the thread
-                progress_dialog.canceled.connect(video_thread.stop)
+        if video_path:
+            # Define the codec and create VideoWriter object
+            codec = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = 30  # Frames per second (matching AudioAnalyzer)
+            self.video_writer = cv2.VideoWriter(
+                video_path,
+                codec,
+                fps,
+                (self.current_wallpaper.width, self.current_wallpaper.height)
+            )
 
-                # Connect the thread's finished signal to cleanup
-                video_thread.finished.connect(self.cleanupVideoWriter)
+            # Create and show progress dialog
+            progress_dialog = QProgressDialog("Generating Video...", "Cancel", 0, 100, self)
+            progress_dialog.setWindowTitle("Video Generation")
+            progress_dialog.setWindowModality(Qt.WindowModal)
+            progress_dialog.show()
 
-                # Show the progress dialog and wait for it to finish
-                result = progress_dialog.exec_()
+            # Create and start the video generation thread
+            video_thread = VideoGenerationThread(
+                self.video_writer,
+                self,  # Pass self instead of just current_wallpaper
+                self.audio_analyzer
+            )
+            video_thread.update_progress.connect(progress_dialog.setValue)
+            video_thread.start()
 
-                # If canceled, release the video writer
-                if result == QProgressDialog.Rejected:
-                    self.cleanupVideoWriter()
-                    print("Video generation canceled.")
-                else:
-                    print("Animated video saved.")
+            # Connect cancel button
+            progress_dialog.canceled.connect(video_thread.stop)
+            video_thread.finished.connect(self.cleanupVideoWriter)
+
+            # Show progress dialog and wait for completion
+            result = progress_dialog.exec_()
+
+            if result == QProgressDialog.Rejected:
+                self.cleanupVideoWriter()
+                print("Video generation canceled.")
+            else:
+                print("Animated video saved.")
 
     def cleanupVideoWriter(self):
         if self.video_writer is not None:
